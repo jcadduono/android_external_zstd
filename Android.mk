@@ -5,11 +5,12 @@ zstd_version_minor := `sed -n '/define ZSTD_VERSION_MINOR/s/.*[[:blank:]]\([0-9]
 zstd_version_patch := `sed -n '/define ZSTD_VERSION_RELEASE/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/common/zstd.h"`
 zstd_version := $(shell echo $(zstd_version_major).$(zstd_version_minor).$(zstd_version_patch))
 
-common_c_includes := $(LOCAL_PATH)/lib/common $(LOCAL_PATH)/lib/compress $(LOCAL_PATH)/lib/decompress
+common_c_includes := $(LOCAL_PATH)/lib/common $(LOCAL_PATH)/lib/compress $(LOCAL_PATH)/lib/decompress $(LOCAL_PATH)/lib/dictBuilder
 
 common_cflags := \
 	-std=c99 \
-	-Wall -Wextra -Wundef -Wshadow -Wcast-qual -Wcast-align -Wstrict-prototypes -Wstrict-aliasing=1 \
+	-Wall -Wextra -Wcast-qual -Wcast-align -Wshadow -Wstrict-aliasing=1 -Wswitch-enum -Wdeclaration-after-statement -Wstrict-prototypes -Wundef \
+	-DXXH_NAMESPACE=ZSTD_ \
 	-DZSTD_LEGACY_SUPPORT=0 \
 	-DZSTD_VERSION=\"$(zstd_version)\"
 
@@ -25,6 +26,7 @@ decompress_src_files := \
 
 lib_src_files := \
 	lib/common/entropy_common.c \
+	lib/common/xxhash.c \
 	lib/common/zstd_common.c \
 	lib/common/fse_decompress.c \
 	$(compress_src_files) \
@@ -55,7 +57,6 @@ endif
 
 ifdef ZSTD_INCLUDE_BENCH
 	programs_src_files += \
-		programs/xxhash.c \
 		programs/datagen.c \
 		programs/bench.c
 	ZSTD_INCLUDE_DIBIO := y
