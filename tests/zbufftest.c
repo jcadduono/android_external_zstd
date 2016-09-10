@@ -1,26 +1,12 @@
-/*
-    Fuzzer test tool for zstd_buffered
-    Copyright (C) Yann Collet 2015-2016
+/**
+ * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ */
 
-    GPL v2 License
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-
-    You can contact the author at :
-    - ZSTD homepage : https://www.zstd.net/
-*/
 
 /*-************************************
 *  Compiler specific
@@ -183,7 +169,7 @@ static int basicUnitTests(U32 seed, double compressibility, ZSTD_customMem custo
     cSize += genSize;
     genSize = compressedBufferSize - cSize;
     { size_t const r = ZBUFF_compressEnd(zc, ((char*)compressedBuffer)+cSize, &genSize);
-      if (r != 0) goto _output_error; }  /*< error, or some data not flushed */
+      if (r != 0) goto _output_error; }  /* error, or some data not flushed */
     cSize += genSize;
     DISPLAYLEVEL(4, "OK (%u bytes : %.2f%%)\n", (U32)cSize, (double)cSize/COMPRESSIBLE_NOISE_LENGTH*100);
 
@@ -424,23 +410,22 @@ static int fuzzerTests(U32 seed, U32 nbTests, unsigned startTest, double compres
                 U32 const enoughDstSize = dstBuffSize >= remainingToFlush;
                 remainingToFlush = ZBUFF_compressEnd(zc, cBuffer+cSize, &dstBuffSize);
                 CHECK (ZBUFF_isError(remainingToFlush), "flush error : %s", ZBUFF_getErrorName(remainingToFlush));
-                //DISPLAY("flush %u bytes : still within context : %i \n", (U32)dstBuffSize, (int)remainingToFlush);
-                CHECK (enoughDstSize && remainingToFlush, "ZBUFF_compressEnd() not fully flushed, but enough space available");
+                CHECK (enoughDstSize && remainingToFlush, "ZBUFF_compressEnd() not fully flushed (%u remaining), but enough space available", (U32)remainingToFlush);
                 cSize += dstBuffSize;
         }   }
         crcOrig = XXH64_digest(&xxhState);
 
         /* multi - fragments decompression test */
         ZBUFF_decompressInitDictionary(zd, dict, dictSize);
-        for (totalCSize = 0, totalGenSize = 0 ; totalCSize < cSize ; ) {
+        errorCode = 1;
+        for (totalCSize = 0, totalGenSize = 0 ; errorCode ; ) {
             size_t readCSrcSize = FUZ_randomLength(&lseed, maxSampleLog);
             size_t const randomDstSize = FUZ_randomLength(&lseed, maxSampleLog);
             size_t dstBuffSize = MIN(dstBufferSize - totalGenSize, randomDstSize);
-            size_t const decompressError = ZBUFF_decompressContinue(zd, dstBuffer+totalGenSize, &dstBuffSize, cBuffer+totalCSize, &readCSrcSize);
-            CHECK (ZBUFF_isError(decompressError), "decompression error : %s", ZBUFF_getErrorName(decompressError));
+            errorCode = ZBUFF_decompressContinue(zd, dstBuffer+totalGenSize, &dstBuffSize, cBuffer+totalCSize, &readCSrcSize);
+            CHECK (ZBUFF_isError(errorCode), "decompression error : %s", ZBUFF_getErrorName(errorCode));
             totalGenSize += dstBuffSize;
             totalCSize += readCSrcSize;
-            errorCode = decompressError;   /* needed for != 0 last test */
         }
         CHECK (errorCode != 0, "frame not fully decoded");
         CHECK (totalGenSize != totalTestSize, "decompressed data : wrong size")

@@ -1,26 +1,13 @@
-/*
-  zstdcli - Command Line Interface (cli) for zstd
-  Copyright (C) Yann Collet 2014-2016
+/**
+ * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ */
 
-  GPL v2 License
 
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License along
-  with this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-
-  You can contact the author at :
-  - zstd homepage : http://www.zstd.net/
-*/
 /*
   Note : this is a user program, not part of libzstd.
   The license of libzstd is BSD.
@@ -33,6 +20,10 @@
 **************************************/
 #ifndef ZSTDCLI_CLEVEL_DEFAULT
 #  define ZSTDCLI_CLEVEL_DEFAULT 3
+#endif
+
+#ifndef ZSTDCLI_CLEVEL_MAX
+#  define ZSTDCLI_CLEVEL_MAX 19
 #endif
 
 
@@ -88,9 +79,11 @@
 #define MB *(1 <<20)
 #define GB *(1U<<30)
 
+#define DEFAULT_DISPLAY_LEVEL 2
+
 static const char*    g_defaultDictName = "dictionary";
 static const unsigned g_defaultMaxDictSize = 110 KB;
-static const unsigned g_defaultDictCLevel = 5;
+static const int      g_defaultDictCLevel = 5;
 static const unsigned g_defaultSelectivityLevel = 9;
 
 
@@ -100,7 +93,7 @@ static const unsigned g_defaultSelectivityLevel = 9;
 #define DISPLAY(...)           fprintf(displayOut, __VA_ARGS__)
 #define DISPLAYLEVEL(l, ...)   if (displayLevel>=l) { DISPLAY(__VA_ARGS__); }
 static FILE* displayOut;
-static unsigned displayLevel = 2;   /* 0 : no display,  1: errors,  2 : + result + interaction + warnings,  3 : + progression,  4 : + information */
+static unsigned displayLevel = DEFAULT_DISPLAY_LEVEL;   /* 0 : no display,  1: errors,  2 : + result + interaction + warnings,  3 : + progression,  4 : + information */
 
 
 /*-************************************
@@ -115,7 +108,7 @@ static int usage(const char* programName)
     DISPLAY( "          with no FILE, or when FILE is - , read standard input\n");
     DISPLAY( "Arguments :\n");
 #ifndef ZSTD_NOCOMPRESS
-    DISPLAY( " -#     : # compression level (1-%u, default:1) \n", ZSTD_maxCLevel());
+    DISPLAY( " -#     : # compression level (1-%d, default:%d) \n", ZSTDCLI_CLEVEL_MAX, ZSTDCLI_CLEVEL_DEFAULT);
 #endif
 #ifndef ZSTD_NODECOMPRESS
     DISPLAY( " -d     : decompression \n");
@@ -136,14 +129,14 @@ static int usage_advanced(const char* programName)
     DISPLAY( "\n");
     DISPLAY( "Advanced arguments :\n");
     DISPLAY( " -V     : display Version number and exit\n");
-    DISPLAY( " -v     : verbose mode\n");
+    DISPLAY( " -v     : verbose mode; specify multiple times to increase log level (default:%d)\n", DEFAULT_DISPLAY_LEVEL);
     DISPLAY( " -q     : suppress warnings; specify twice to suppress errors too\n");
     DISPLAY( " -c     : force write to standard output, even if it is the console\n");
 #ifdef UTIL_HAS_CREATEFILELIST
     DISPLAY( " -r     : operate recursively on directories\n");
 #endif
 #ifndef ZSTD_NOCOMPRESS
-    DISPLAY( "--ultra : enable ultra modes (requires more memory to decompress)\n");
+    DISPLAY( "--ultra : enable levels beyond %i, up to %i (requires more memory)\n", ZSTDCLI_CLEVEL_MAX, ZSTD_maxCLevel());
     DISPLAY( "--no-dictID : don't write dictID into header (dictionary compression)\n");
     DISPLAY( "--[no-]check : integrity check (default:enabled)\n");
 #endif
@@ -165,7 +158,7 @@ static int usage_advanced(const char* programName)
     DISPLAY( "Benchmark arguments :\n");
     DISPLAY( " -b#    : benchmark file(s), using # compression level (default : 1) \n");
     DISPLAY( " -e#    : test all compression levels from -bX to # (default: 1)\n");
-    DISPLAY( " -i#    : iteration loops [1-9](default : 3)\n");
+    DISPLAY( " -i#    : minimum evaluation time in seconds (default : 3s)\n");
     DISPLAY( " -B#    : cut file into independent blocks of size # (default: no block)\n");
 #endif
     return 0;
@@ -201,11 +194,12 @@ static unsigned readU32FromChar(const char** stringPtr)
 
 #define CLEAN_RETURN(i) { operationResult = (i); goto _end; }
 
-int main(int argCount, const char** argv)
+int main(int argCount, char** argv)
 {
     int argNb,
         bench=0,
         decode=0,
+        testmode=0,
         forceStdout=0,
         main_pause=0,
         nextEntryIsDictionary=0,
@@ -214,9 +208,10 @@ int main(int argCount, const char** argv)
         nextArgumentIsOutFileName=0,
         nextArgumentIsMaxDict=0,
         nextArgumentIsDictID=0,
-        nextArgumentIsFile=0;
-    unsigned cLevel = ZSTDCLI_CLEVEL_DEFAULT;
-    unsigned cLevelLast = 1;
+        nextArgumentIsFile=0,
+        ultra=0;
+    int cLevel = ZSTDCLI_CLEVEL_DEFAULT;
+    int cLevelLast = 1;
     unsigned recursive = 0;
     const char** filenameTable = (const char**)malloc(argCount * sizeof(const char*));   /* argCount >= 1 */
     unsigned filenameIdx = 0;
@@ -226,7 +221,7 @@ int main(int argCount, const char** argv)
     char* dynNameSpace = NULL;
     unsigned maxDictSize = g_defaultMaxDictSize;
     unsigned dictID = 0;
-    unsigned dictCLevel = g_defaultDictCLevel;
+    int dictCLevel = g_defaultDictCLevel;
     unsigned dictSelect = g_defaultSelectivityLevel;
 #ifdef UTIL_HAS_CREATEFILELIST
     const char** fileNamesTable = NULL;
@@ -267,13 +262,13 @@ int main(int argCount, const char** argv)
             if (!strcmp(argument, "--verbose")) { displayLevel++; continue; }
             if (!strcmp(argument, "--quiet")) { displayLevel--; continue; }
             if (!strcmp(argument, "--stdout")) { forceStdout=1; outFileName=stdoutmark; displayLevel-=(displayLevel==2); continue; }
-            if (!strcmp(argument, "--ultra")) { FIO_setMaxWLog(0); continue; }
+            if (!strcmp(argument, "--ultra")) { ultra=1; FIO_setMaxWLog(0); continue; }
             if (!strcmp(argument, "--check")) { FIO_setChecksumFlag(2); continue; }
             if (!strcmp(argument, "--no-check")) { FIO_setChecksumFlag(0); continue; }
             if (!strcmp(argument, "--no-dictID")) { FIO_setDictIDFlag(0); continue; }
             if (!strcmp(argument, "--sparse")) { FIO_setSparseWrite(2); continue; }
             if (!strcmp(argument, "--no-sparse")) { FIO_setSparseWrite(0); continue; }
-            if (!strcmp(argument, "--test")) { decode=1; outFileName=nulmark; FIO_overwriteMode(); continue; }
+            if (!strcmp(argument, "--test")) { testmode=1; decode=1; continue; }
             if (!strcmp(argument, "--train")) { dictBuild=1; outFileName=g_defaultDictName; continue; }
             if (!strcmp(argument, "--maxdict")) { nextArgumentIsMaxDict=1; continue; }
             if (!strcmp(argument, "--dictID")) { nextArgumentIsDictID=1; continue; }
@@ -297,10 +292,7 @@ int main(int argCount, const char** argv)
     #ifndef ZSTD_NOCOMPRESS
                     /* compression Level */
                     if ((*argument>='0') && (*argument<='9')) {
-                        cLevel = readU32FromChar(&argument);
-                        dictCLevel = cLevel;
-                        if (dictCLevel > ZSTD_maxCLevel())
-                            CLEAN_RETURN(badusage(programName));
+                        dictCLevel = cLevel = readU32FromChar(&argument);
                         continue;
                     }
     #endif
@@ -316,7 +308,7 @@ int main(int argCount, const char** argv)
                     case 'd': decode=1; argument++; break;
 
                         /* Force stdout, even if stdout==console */
-                    case 'c': forceStdout=1; outFileName=stdoutmark; displayLevel-=(displayLevel==2); argument++; break;
+                    case 'c': forceStdout=1; outFileName=stdoutmark; argument++; break;
 
                         /* Use file content as dictionary */
                     case 'D': nextEntryIsDictionary = 1; argument++; break;
@@ -337,7 +329,7 @@ int main(int argCount, const char** argv)
                     case 'C': argument++; FIO_setChecksumFlag(2); break;
 
                         /* test compressed file */
-                    case 't': decode=1; outFileName=nulmark; argument++; break;
+                    case 't': testmode=1; decode=1; argument++; break;
 
                         /* destination file name */
                     case 'o': nextArgumentIsOutFileName=1; argument++; break;
@@ -440,8 +432,8 @@ int main(int argCount, const char** argv)
     if (recursive) {
         fileNamesTable = UTIL_createFileList(filenameTable, filenameIdx, &fileNamesBuf, &fileNamesNb);
         if (fileNamesTable) {
-            unsigned i;
-            for (i=0; i<fileNamesNb; i++) DISPLAYLEVEL(3, "%d %s\n", i, fileNamesTable[i]);
+            unsigned u;
+            for (u=0; u<fileNamesNb; u++) DISPLAYLEVEL(4, "%u %s\n", u, fileNamesTable[u]);
             free((void*)filenameTable);
             filenameTable = fileNamesTable;
             filenameIdx = fileNamesNb;
@@ -473,8 +465,8 @@ int main(int argCount, const char** argv)
     }
 
     /* No input filename ==> use stdin and stdout */
-    filenameIdx += !filenameIdx;   /*< default input is stdin */
-    if (!strcmp(filenameTable[0], stdinmark) && !outFileName ) outFileName = stdoutmark;   /*< when input is stdin, default output is stdout */
+    filenameIdx += !filenameIdx;   /* filenameTable[0] is stdin by default */
+    if (!strcmp(filenameTable[0], stdinmark) && !outFileName) outFileName = stdoutmark;   /* when input is stdin, default output is stdout */
 
     /* Check if input/output defined as console; trigger an error in this case */
     if (!strcmp(filenameTable[0], stdinmark) && IS_CONSOLE(stdin) ) CLEAN_RETURN(badusage(programName));
@@ -487,9 +479,16 @@ int main(int argCount, const char** argv)
         CLEAN_RETURN(filenameIdx);
     }
 
-    /* No warning message in pipe mode (stdin + stdout) or multiple mode */
+    /* check compression level limits */
+    {   int const maxCLevel = ultra ? ZSTD_maxCLevel() : ZSTDCLI_CLEVEL_MAX;
+        if (cLevel > maxCLevel) {
+            DISPLAYLEVEL(2, "Warning : compression level higher than max, reduced to %i \n", maxCLevel);
+            cLevel = maxCLevel;
+    }   }
+
+    /* No warning message in pipe mode (stdin + stdout) or multi-files mode */
     if (!strcmp(filenameTable[0], stdinmark) && outFileName && !strcmp(outFileName,stdoutmark) && (displayLevel==2)) displayLevel=1;
-    if ((filenameIdx>1) && (displayLevel==2)) displayLevel=1;
+    if ((filenameIdx>1) & (displayLevel==2)) displayLevel=1;
 
     /* IO Stream/File */
     FIO_setNotificationLevel(displayLevel);
@@ -503,6 +502,7 @@ int main(int argCount, const char** argv)
 #endif
     {  /* decompression */
 #ifndef ZSTD_NODECOMPRESS
+        if (testmode) { outFileName=nulmark; FIO_setRemoveSrcFile(0); } /* test mode */
         if (filenameIdx==1 && outFileName)
             operationResult = FIO_decompressFilename(outFileName, filenameTable[0], dictFileName);
         else

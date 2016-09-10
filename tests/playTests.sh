@@ -16,7 +16,7 @@ roundTripTest() {
     rm -f tmp1 tmp2
     $ECHO "roundTripTest: ./datagen $1 $p | $ZSTD -v$c | $ZSTD -d"
     ./datagen $1 $p | $MD5SUM > tmp1
-    ./datagen $1 $p | $ZSTD -vq$c | $ZSTD -d  | $MD5SUM > tmp2
+    ./datagen $1 $p | $ZSTD -v$c | $ZSTD -d  | $MD5SUM > tmp2
     diff -q tmp1 tmp2
 }
 
@@ -32,11 +32,11 @@ case "$OS" in
 esac
 
 MD5SUM="md5sum"
-if [ "$TRAVIS_OS_NAME" = "osx" ]; then
+if [[ "$OSTYPE" == "darwin"* ]]; then
     MD5SUM="md5 -r"
 fi
 
-$ECHO "\nStarting playTests.sh isWindows=$isWindows TRAVIS_OS_NAME=$TRAVIS_OS_NAME"
+$ECHO "\nStarting playTests.sh isWindows=$isWindows"
 
 [ -n "$ZSTD" ] || die "ZSTD variable must be defined!"
 
@@ -47,7 +47,7 @@ $ECHO "\n**** simple tests **** "
 $ZSTD -f tmp                      # trivial compression case, creates tmp.zst
 $ZSTD -df tmp.zst                 # trivial decompression case (overwrites tmp)
 $ECHO "test : too large compression level (must fail)"
-$ZSTD -99 tmp && die "too large compression level undetected"
+$ZSTD -99 -f tmp  # too large compression level, automatic sized down
 $ECHO "test : compress to stdout"
 $ZSTD tmp -c > tmpCompressed
 $ZSTD tmp --stdout > tmpCompressed       # long command format
@@ -92,6 +92,13 @@ $ECHO "world!" > world.tmp
 cat hello.tmp world.tmp > helloworld.tmp
 $ZSTD -c hello.tmp > hello.zstd
 $ZSTD -c world.tmp > world.zstd
+cat hello.zstd world.zstd > helloworld.zstd
+$ZSTD -dc helloworld.zstd > result.tmp
+cat result.tmp
+sdiff helloworld.tmp result.tmp
+$ECHO "frame concatenation without checksum"
+$ZSTD -c hello.tmp > hello.zstd --no-check
+$ZSTD -c world.tmp > world.zstd --no-check
 cat hello.zstd world.zstd > helloworld.zstd
 $ZSTD -dc helloworld.zstd > result.tmp
 cat result.tmp
@@ -142,8 +149,8 @@ $ECHO "\n**** multiple files tests **** "
 ./datagen -s1        > tmp1 2> $INTOVOID
 ./datagen -s2 -g100K > tmp2 2> $INTOVOID
 ./datagen -s3 -g1M   > tmp3 2> $INTOVOID
-$ZSTD -f tmp*
 $ECHO "compress tmp* : "
+$ZSTD -f tmp*
 ls -ls tmp*
 rm tmp1 tmp2 tmp3
 $ECHO "decompress tmp* : "
@@ -162,35 +169,41 @@ $ZSTD -f tmp1 notHere tmp2 && die "missing file not detected!"
 
 $ECHO "\n**** dictionary tests **** "
 
+TESTFILE=../programs/zstdcli.c
 ./datagen > tmpDict
 ./datagen -g1M | $MD5SUM > tmp1
 ./datagen -g1M | $ZSTD -D tmpDict | $ZSTD -D tmpDict -dvq | $MD5SUM > tmp2
 diff -q tmp1 tmp2
 $ECHO "- Create first dictionary"
-$ZSTD --train *.c -o tmpDict
-cp zstdcli.c tmp
+$ZSTD --train *.c ../programs/*.c -o tmpDict
+cp $TESTFILE tmp
 $ZSTD -f tmp -D tmpDict
 $ZSTD -d tmp.zst -D tmpDict -of result
-diff zstdcli.c result
+diff $TESTFILE result
 $ECHO "- Create second (different) dictionary"
-$ZSTD --train *.c *.h -o tmpDictC
+$ZSTD --train *.c ../programs/*.c ../programs/*.h -o tmpDictC
 $ZSTD -d tmp.zst -D tmpDictC -of result && die "wrong dictionary not detected!"
 $ECHO "- Create dictionary with short dictID"
-$ZSTD --train *.c --dictID 1 -o tmpDict1
+$ZSTD --train *.c ../programs/*.c --dictID 1 -o tmpDict1
 cmp tmpDict tmpDict1 && die "dictionaries should have different ID !"
 $ECHO "- Compress without dictID"
 $ZSTD -f tmp -D tmpDict1 --no-dictID
 $ZSTD -d tmp.zst -D tmpDict -of result
-diff zstdcli.c result
+diff $TESTFILE result
 $ECHO "- Compress multiple files with dictionary"
 rm -rf dirTestDict
 mkdir dirTestDict
 cp *.c dirTestDict
-cp *.h dirTestDict
-cat dirTestDict/* | $MD5SUM > tmph1  # note : we expect same file order to generate same hash
-$ZSTD -f dirTestDict/* -D tmpDictC
-$ZSTD -d dirTestDict/*.zst -D tmpDictC -c | $MD5SUM > tmph2
-diff -q tmph1 tmph2
+cp ../programs/*.c dirTestDict
+cp ../programs/*.h dirTestDict
+$MD5SUM dirTestDict/* > tmph1
+$ZSTD -f --rm dirTestDict/* -D tmpDictC
+$ZSTD -d --rm dirTestDict/*.zst -D tmpDictC  # note : use internal checksum by default
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  $ECHO "test skipped on OS-X"  # not compatible with OS-X's md5
+else
+  $MD5SUM -c tmph1
+fi
 rm -rf dirTestDict
 rm tmp*
 
@@ -204,8 +217,16 @@ $ZSTD -t tmp1.zst
 $ZSTD --test tmp1.zst
 $ECHO "test multiple files (*.zst) "
 $ZSTD -t *.zst
-$ECHO "test good and bad files (*) "
+$ECHO "test bad files (*) "
 $ZSTD -t * && die "bad files not detected !"
+$ZSTD -t tmp1 && die "bad file not detected !"
+cp tmp1 tmp2.zst
+$ZSTD -t tmp2.zst && die "bad file not detected !"
+./datagen -g0 > tmp3
+$ZSTD -t tmp3 && die "bad file not detected !"   # detects 0-sized files as bad
+$ECHO "test --rm and --test combined "
+$ZSTD -t --rm tmp1.zst
+ls -ls tmp1.zst  # check file is still present
 
 
 $ECHO "\n**** zstd round-trip tests **** "

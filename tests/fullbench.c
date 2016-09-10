@@ -1,26 +1,12 @@
-/*
-    fullbench.c - Detailed bench program for zstd
-    Copyright (C) Yann Collet 2014-2016
+/**
+ * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ */
 
-    GPL v2 License
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-
-    You can contact the author at :
-    - zstd homepage : http://www.zstd.net
-*/
 
 /*_************************************
 *  Includes
@@ -31,8 +17,9 @@
 #include <time.h>        /* clock_t, clock, CLOCKS_PER_SEC */
 
 #include "mem.h"
+#include "zstd_internal.h"   /* ZSTD_blockHeaderSize, blockType_e, KB, MB */
 #define ZSTD_STATIC_LINKING_ONLY  /* ZSTD_compressBegin, ZSTD_compressContinue, etc. */
-#include "zstd.h"        /* ZSTD_VERSION_STRING */
+#include "zstd.h"            /* ZSTD_VERSION_STRING */
 #define FSE_STATIC_LINKING_ONLY   /* FSE_DTABLE_SIZE_U32 */
 #include "fse.h"
 #include "zbuff.h"
@@ -45,10 +32,6 @@
 #define PROGRAM_DESCRIPTION "Zstandard speed analyzer"
 #define AUTHOR "Yann Collet"
 #define WELCOME_MESSAGE "*** %s %s %i-bits, by %s (%s) ***\n", PROGRAM_DESCRIPTION, ZSTD_VERSION_STRING, (int)(sizeof(void*)*8), AUTHOR, __DATE__
-
-
-#define KB *(1<<10)
-#define MB *(1<<20)
 
 #define NBLOOPS    6
 #define TIMELOOP_S 2
@@ -110,9 +93,8 @@ static size_t BMK_findMaxMem(U64 requiredMem)
 /*_*******************************************************
 *  Benchmark wrappers
 *********************************************************/
-typedef enum { bt_compressed, bt_raw, bt_rle, bt_end } blockType_t;
 typedef struct {
-    blockType_t blockType;
+    blockType_e blockType;
     U32 unusedBits;
     U32 origSize;
 } blockProperties_t;
@@ -177,12 +159,9 @@ static size_t local_ZBUFF_decompress(void* dst, size_t dstCapacity, void* buff2,
 static ZSTD_CCtx* g_zcc = NULL;
 size_t local_ZSTD_compressContinue(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
 {
-    size_t compressedSize;
     (void)buff2;
     ZSTD_compressBegin(g_zcc, 1);
-    compressedSize = ZSTD_compressContinue(g_zcc, dst, dstCapacity, src, srcSize);
-    compressedSize += ZSTD_compressEnd(g_zcc, ((char*)dst)+compressedSize, dstCapacity-compressedSize);
-    return compressedSize;
+    return ZSTD_compressEnd(g_zcc, dst, dstCapacity, src, srcSize);
 }
 
 size_t local_ZSTD_decompressContinue(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
@@ -214,8 +193,8 @@ size_t local_ZSTD_decompressContinue(void* dst, size_t dstCapacity, void* buff2,
 static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
 {
     BYTE*  dstBuff;
-    size_t dstBuffSize;
-    BYTE*  buff2;
+    size_t const dstBuffSize = ZSTD_compressBound(srcSize);
+    void*  buff2;
     const char* benchName;
     size_t (*benchFunction)(void* dst, size_t dstSize, void* verifBuff, const void* src, size_t srcSize);
     double bestTime = 100000000.;
@@ -252,9 +231,8 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
     }
 
     /* Allocation */
-    dstBuffSize = ZSTD_compressBound(srcSize);
     dstBuff = (BYTE*)malloc(dstBuffSize);
-    buff2 = (BYTE*)malloc(dstBuffSize);
+    buff2 = malloc(dstBuffSize);
     if ((!dstBuff) || (!buff2)) {
         DISPLAY("\nError: not enough memory!\n");
         free(dstBuff); free(buff2);
@@ -287,7 +265,7 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
                 DISPLAY("ZSTD_decodeLiteralsBlock : impossible to test on this sample (not compressible)\n");
                 goto _cleanOut;
             }
-            skippedSize = frameHeaderSize + 3 /* ZSTD_blockHeaderSize */;
+            skippedSize = frameHeaderSize + ZSTD_blockHeaderSize;
             memcpy(buff2, dstBuff+skippedSize, g_cSize-skippedSize);
             srcSize = srcSize > 128 KB ? 128 KB : srcSize;    /* speed relative to block */
             break;
@@ -309,9 +287,9 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
                 DISPLAY("ZSTD_decodeSeqHeaders : impossible to test on this sample (not compressible)\n");
                 goto _cleanOut;
             }
-            iend = ip + 3 /* ZSTD_blockHeaderSize */ + cBlockSize;   /* End of first block */
-            ip += 3 /* ZSTD_blockHeaderSize */;                     /* skip block header */
-            ip += ZSTD_decodeLiteralsBlock(g_zdc, ip, iend-ip);  /* skip literal segment */
+            iend = ip + ZSTD_blockHeaderSize + cBlockSize;   /* End of first block */
+            ip += ZSTD_blockHeaderSize;                      /* skip block header */
+            ip += ZSTD_decodeLiteralsBlock(g_zdc, ip, iend-ip);   /* skip literal segment */
             g_cSize = iend-ip;
             memcpy(buff2, ip, g_cSize);   /* copy rest of block (it starts by SeqHeader) */
             srcSize = srcSize > 128 KB ? 128 KB : srcSize;   /* speed relative to block */

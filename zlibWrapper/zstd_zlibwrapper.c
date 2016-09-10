@@ -1,49 +1,29 @@
-/*
-    zstd_zlibwrapper.c - zstd wrapper for zlib
-    Copyright (C) 2016, Przemyslaw Skibinski.
+/**
+ * Copyright (c) 2016-present, Przemyslaw Skibinski, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ */
 
-    BSD 2-Clause License (http://www.opensource.org/licenses/bsd-license.php)
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions are
-    met:
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above
-    copyright notice, this list of conditions and the following disclaimer
-    in the documentation and/or other materials provided with the
-    distribution.
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-    You can contact the author at :
-    - zstd source repository : https://github.com/Cyan4973/zstd
-*/
-
-#include <stdarg.h>            /* va_list, for z_gzprintf */
+#include <stdio.h>                 /* vsprintf */
+#include <stdarg.h>                /* va_list, for z_gzprintf */
 #include <zlib.h>
 #include "zstd_zlibwrapper.h"
 #define ZSTD_STATIC_LINKING_ONLY   /* ZSTD_MAGICNUMBER */
 #include "zstd.h"
 #define ZBUFF_STATIC_LINKING_ONLY  /* ZBUFF_createCCtx_advanced */
 #include "zbuff.h"
-#include "zstd_internal.h"     /* defaultCustomMem */
+#include "zstd_internal.h"         /* defaultCustomMem */
 
 
 #define Z_INFLATE_SYNC              8
 #define ZWRAP_HEADERSIZE            4
 #define ZWRAP_DEFAULT_CLEVEL        5   /* Z_DEFAULT_COMPRESSION is translated to ZWRAP_DEFAULT_CLEVEL for zstd */
 
-#define LOG_WRAPPER(...)  // printf(__VA_ARGS__)
+#define LOG_WRAPPER(...)  /* printf(__VA_ARGS__) */
 
 
 #define FINISH_WITH_GZ_ERR(msg) { \
@@ -144,7 +124,7 @@ ZEXTERN int ZEXPORT z_deflateInit_ OF((z_streamp strm, int level,
                                      const char *version, int stream_size))
 {
     ZWRAP_CCtx* zwc;
-    
+
     if (!g_useZSTD) {
         LOG_WRAPPER("- deflateInit level=%d\n", level);
         return deflateInit_((strm), (level), version, stream_size);
@@ -192,7 +172,7 @@ ZEXTERN int ZEXPORT z_deflateSetDictionary OF((z_streamp strm,
         { size_t const errorCode = ZBUFF_compressInitDictionary(zwc->zbc, dictionary, dictLength, zwc->compressionLevel);
           if (ZSTD_isError(errorCode)) return Z_MEM_ERROR; }
     }
-    
+
     return Z_OK;
 }
 
@@ -226,7 +206,7 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
 
     if (flush == Z_FULL_FLUSH) FINISH_WITH_ERR(strm, "Z_FULL_FLUSH is not supported!");
 
-    if (flush == Z_FINISH || flush == Z_FULL_FLUSH) {
+    if (flush == Z_FINISH) {
         size_t bytesLeft;
         size_t dstCapacity = strm->avail_out;
         if (zwc->bytesLeft) {
@@ -235,8 +215,6 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
         } else {
             bytesLeft = ZBUFF_compressEnd(zwc->zbc, strm->next_out, &dstCapacity);
             LOG_WRAPPER("ZBUFF_compressEnd dstCapacity=%d bytesLeft=%d\n", (int)dstCapacity, (int)bytesLeft);
-      //      { size_t const errorCode = ZBUFF_compressInit(zwc->zbc, 1);
-      //        if (ZSTD_isError(errorCode)) return Z_MEM_ERROR; }
         }
         if (ZSTD_isError(bytesLeft)) return Z_MEM_ERROR;
         strm->next_out += dstCapacity;
@@ -245,11 +223,23 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
         if (flush == Z_FINISH && bytesLeft == 0) return Z_STREAM_END;
         zwc->bytesLeft = bytesLeft;
     }
+
+    if (flush == Z_SYNC_FLUSH) {
+        size_t bytesLeft;
+        size_t dstCapacity = strm->avail_out;
+        bytesLeft = ZBUFF_compressFlush(zwc->zbc, strm->next_out, &dstCapacity);
+        LOG_WRAPPER("ZBUFF_compressFlush avail_out=%d dstCapacity=%d bytesLeft=%d\n", (int)strm->avail_out, (int)dstCapacity, (int)bytesLeft);
+        if (ZSTD_isError(bytesLeft)) return Z_MEM_ERROR;
+        strm->next_out += dstCapacity;
+        strm->total_out += dstCapacity;
+        strm->avail_out -= dstCapacity;
+        zwc->bytesLeft = bytesLeft;
+    }
     return Z_OK;
 }
 
 
-ZEXTERN int ZEXPORT z_deflateEnd OF((z_streamp strm)) 
+ZEXTERN int ZEXPORT z_deflateEnd OF((z_streamp strm))
 {
     if (!g_useZSTD) {
         LOG_WRAPPER("- deflateEnd\n");
@@ -296,7 +286,7 @@ typedef struct {
     ZBUFF_DCtx* zbd;
     char headerBuf[ZWRAP_HEADERSIZE];
     int errorCount;
-    
+
     /* zlib params */
     int stream_size;
     char *version;
@@ -385,7 +375,7 @@ ZEXTERN int ZEXPORT z_inflateSetDictionary OF((z_streamp strm,
         if (strm->state == NULL) return Z_MEM_ERROR;
         errorCode = ZBUFF_decompressInitDictionary(zwd->zbd, dictionary, dictLength);
         if (ZSTD_isError(errorCode)) { ZWRAP_freeDCtx(zwd); strm->state = NULL; return Z_MEM_ERROR; }
-        
+
         if (strm->total_in == ZSTD_frameHeaderSize_min) {
             size_t dstCapacity = 0;
             size_t srcSize = strm->total_in;
@@ -403,7 +393,7 @@ ZEXTERN int ZEXPORT z_inflateSetDictionary OF((z_streamp strm,
 }
 
 
-ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush)) 
+ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
 {
     if (!strm->reserved)
         return inflate(strm, flush);
@@ -444,7 +434,7 @@ ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
                 LOG_WRAPPER("ZLIB inflate errorCode=%d strm->avail_in=%d\n", (int)errorCode, (int)strm->avail_in);
                 if (errorCode != Z_OK) { ZWRAP_freeDCtx(zwd); strm->state = NULL; return errorCode; }
                 if (strm->avail_in > 0) goto error;
-                
+
                 strm->next_in = strm2.next_in;
                 strm->avail_in = strm2.avail_in;
                 strm->next_out = strm2.next_out;
@@ -493,7 +483,7 @@ ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
         if (errorCode == 0) return Z_STREAM_END;
         return Z_OK;
 error:
-        ZWRAP_freeDCtx(zwd); 
+        ZWRAP_freeDCtx(zwd);
         strm->state = NULL;
         return Z_MEM_ERROR;
     }
@@ -506,7 +496,7 @@ ZEXTERN int ZEXPORT z_inflateEnd OF((z_streamp strm))
     int ret = Z_OK;
     if (!strm->reserved)
         return inflateEnd(strm);
- 
+
     LOG_WRAPPER("- inflateEnd total_in=%d total_out=%d\n", (int)(strm->total_in), (int)(strm->total_out));
     {   ZWRAP_DCtx* zwd = (ZWRAP_DCtx*) strm->state;
         size_t const errorCode = ZWRAP_freeDCtx(zwd);
@@ -700,7 +690,7 @@ ZEXTERN int ZEXPORT z_compress OF((Bytef *dest,   uLongf *destLen,
     if (!g_useZSTD)
         return compress(dest, destLen, source, sourceLen);
 
-    { size_t dstCapacity = *destLen; 
+    { size_t dstCapacity = *destLen;
       size_t const errorCode = ZSTD_compress(dest, dstCapacity, source, sourceLen, ZWRAP_DEFAULT_CLEVEL);
       LOG_WRAPPER("z_compress sourceLen=%d dstCapacity=%d\n", (int)sourceLen, (int)dstCapacity);
       if (ZSTD_isError(errorCode)) return Z_MEM_ERROR;
@@ -716,8 +706,8 @@ ZEXTERN int ZEXPORT z_compress2 OF((Bytef *dest,   uLongf *destLen,
 {
     if (!g_useZSTD)
         return compress2(dest, destLen, source, sourceLen, level);
-        
-    { size_t dstCapacity = *destLen; 
+
+    { size_t dstCapacity = *destLen;
       size_t const errorCode = ZSTD_compress(dest, dstCapacity, source, sourceLen, level);
       if (ZSTD_isError(errorCode)) return Z_MEM_ERROR;
       *destLen = errorCode;
@@ -739,10 +729,9 @@ ZEXTERN int ZEXPORT z_uncompress OF((Bytef *dest,   uLongf *destLen,
                                    const Bytef *source, uLong sourceLen))
 {
     if (sourceLen < 4 || MEM_readLE32(source) != ZSTD_MAGICNUMBER)
-//    if (!g_useZSTD)
         return uncompress(dest, destLen, source, sourceLen);
 
-    { size_t dstCapacity = *destLen; 
+    { size_t dstCapacity = *destLen;
       size_t const errorCode = ZSTD_decompress(dest, dstCapacity, source, sourceLen);
       if (ZSTD_isError(errorCode)) return Z_MEM_ERROR;
       *destLen = errorCode;
@@ -843,7 +832,6 @@ ZEXTERN int ZEXPORTVA z_gzprintf OF((gzFile file, const char *format, ...))
         va_end (args);
 
         ret = gzprintf(file, buf);
-      //  printf("gzprintf ret=%d\n", ret);
         return ret;
     }
     FINISH_WITH_GZ_ERR("gzprintf is not supported!");

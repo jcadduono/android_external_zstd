@@ -1,28 +1,12 @@
-/*
-    datagencli.c
-    compressible data command line generator
-    Copyright (C) Yann Collet 2012-2015
+/**
+ * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ */
 
-    GPL v2 License
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-
-    You can contact the author at :
-   - ZSTD source repository : https://github.com/Cyan4973/zstd
-   - Public forum : https://groups.google.com/forum/#!forum/lz4c
-*/
 
 /*-************************************
 *  Includes
@@ -39,7 +23,7 @@
 #define MB *(1 <<20)
 #define GB *(1U<<30)
 
-#define SIZE_DEFAULT (64 KB)
+#define SIZE_DEFAULT ((64 KB) + 1)
 #define SEED_DEFAULT 0
 #define COMPRESSIBILITY_DEFAULT 50
 
@@ -72,15 +56,13 @@ static int usage(const char* programName)
 
 int main(int argc, const char** argv)
 {
-    int argNb;
     double proba = (double)COMPRESSIBILITY_DEFAULT / 100;
     double litProba = 0.0;
     U64 size = SIZE_DEFAULT;
     U32 seed = SEED_DEFAULT;
-    const char* programName;
+    const char* const programName = argv[0];
 
-    /* Check command line */
-    programName = argv[0];
+    int argNb;
     for(argNb=1; argNb<argc; argNb++) {
         const char* argument = argv[argNb];
 

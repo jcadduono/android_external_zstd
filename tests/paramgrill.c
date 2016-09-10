@@ -1,26 +1,11 @@
-/*
-    paramgrill.c - parameter tester for zstd
-    Copyright (C) Yann Collet 2015-2016
-
-    GPL v2 License
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-
-    You can contact the author at :
-    - zstd homepage : http://www.zstd.net/
-*/
+/**
+ * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ */
 
 
 /*-************************************
@@ -340,7 +325,7 @@ typedef struct {
 
 static void BMK_printWinners2(FILE* f, const winnerInfo_t* winners, size_t srcSize)
 {
-    unsigned cLevel;
+    int cLevel;
 
     fprintf(f, "\n /* Proposed configurations : */ \n");
     fprintf(f, "    /* W,  C,  H,  S,  L,  T, strat */ \n");
@@ -364,7 +349,7 @@ static int BMK_seed(winnerInfo_t* winners, const ZSTD_compressionParameters para
 {
     BMK_result_t testResult;
     int better = 0;
-    unsigned cLevel;
+    int cLevel;
 
     BMK_benchParam(&testResult, srcBuffer, srcSize, ctx, params);
 
@@ -618,9 +603,9 @@ static void BMK_benchMem(void* srcBuffer, size_t srcSize)
     }
 
     /* establish speed objectives (relative to level 1) */
-    {   unsigned u;
-        for (u=2; u<=ZSTD_maxCLevel(); u++)
-            g_cSpeedTarget[u] = (g_cSpeedTarget[u-1] * 25) / 32;
+    {   int i;
+        for (i=2; i<=ZSTD_maxCLevel(); i++)
+            g_cSpeedTarget[i] = (g_cSpeedTarget[i-1] * 25) / 32;
     }
 
     /* populate initial solution */
