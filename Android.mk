@@ -1,16 +1,15 @@
 LOCAL_PATH := $(call my-dir)
 
-zstd_version_major := `sed -n '/define ZSTD_VERSION_MAJOR/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/common/zstd.h"`
-zstd_version_minor := `sed -n '/define ZSTD_VERSION_MINOR/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/common/zstd.h"`
-zstd_version_patch := `sed -n '/define ZSTD_VERSION_RELEASE/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/common/zstd.h"`
+zstd_version_major := `sed -n '/define ZSTD_VERSION_MAJOR/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/zstd.h"`
+zstd_version_minor := `sed -n '/define ZSTD_VERSION_MINOR/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/zstd.h"`
+zstd_version_patch := `sed -n '/define ZSTD_VERSION_RELEASE/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/zstd.h"`
 zstd_version := $(shell echo $(zstd_version_major).$(zstd_version_minor).$(zstd_version_patch))
 
-common_c_includes := $(LOCAL_PATH)/lib/common $(LOCAL_PATH)/lib/compress $(LOCAL_PATH)/lib/decompress $(LOCAL_PATH)/lib/dictBuilder
+common_c_includes := $(LOCAL_PATH)/lib $(LOCAL_PATH)/lib/common
 
 common_cflags := \
 	-std=c99 \
 	-Wall -Wextra -Wcast-qual -Wcast-align -Wshadow -Wstrict-aliasing=1 -Wswitch-enum -Wdeclaration-after-statement -Wstrict-prototypes -Wundef \
-	-DXXH_NAMESPACE=ZSTD_ \
 	-DZSTD_LEGACY_SUPPORT=0 \
 	-DZSTD_VERSION=\"$(zstd_version)\"
 
@@ -19,10 +18,14 @@ compress_src_files := \
 	lib/compress/fse_compress.c \
 	lib/compress/huf_compress.c
 
-
 decompress_src_files := \
 	lib/decompress/zstd_decompress.c \
 	lib/decompress/huf_decompress.c
+
+lib_c_includes += $(LOCAL_PATH)/lib/compress
+
+lib_cflags := \
+	-O3
 
 lib_src_files := \
 	lib/common/entropy_common.c \
@@ -32,10 +35,22 @@ lib_src_files := \
 	$(compress_src_files) \
 	$(decompress_src_files)
 
-lib_cflags := \
-	-O3
+ifndef ZSTD_NO_COMPRESS
+	programs_cflags += -DZSTD_NOCOMPRESS
+	ZSTD_INCLUDE_DICT :=
+	ZSTD_INCLUDE_BENCH :=
+endif
+
+ifndef ZSTD_NO_DECOMPRESS
+	programs_cflags += -DZSTD_NODECOMPRESS
+	ZSTD_INCLUDE_DICT :=
+	ZSTD_INCLUDE_BENCH :=
+endif
 
 programs_c_includes := $(LOCAL_PATH)/programs
+
+programs_cflags := \
+	-Wswitch-enum -falign-loops=32
 
 programs_src_files := \
 	lib/compress/zbuff_compress.c \
@@ -43,10 +58,8 @@ programs_src_files := \
 	programs/zstdcli.c \
 	programs/fileio.c
 
-programs_cflags := \
-	-Wswitch-enum
-
 ifdef ZSTD_INCLUDE_DICT
+	common_c_includes += $(LOCAL_PATH)/lib/dictBuilder
 	lib_src_files += \
 		lib/dictBuilder/zdict.c \
 		lib/dictBuilder/divsufsort.c
@@ -59,7 +72,6 @@ ifdef ZSTD_INCLUDE_BENCH
 	programs_src_files += \
 		programs/datagen.c \
 		programs/bench.c
-	ZSTD_INCLUDE_DIBIO := y
 else
 	common_cflags += -DZSTD_NOBENCH
 endif
@@ -71,7 +83,7 @@ endif
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := libzstd-static
-LOCAL_C_INCLUDES := $(common_c_includes)
+LOCAL_C_INCLUDES := $(lib_c_includes) $(common_c_includes)
 LOCAL_CFLAGS := $(common_cflags) $(lib_cflags)
 LOCAL_SRC_FILES := $(lib_src_files)
 LOCAL_MODULE_TAGS := optional
@@ -79,7 +91,7 @@ include $(BUILD_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := libzstd
-LOCAL_C_INCLUDES := $(common_c_includes)
+LOCAL_C_INCLUDES := $(lib_c_includes) $(common_c_includes)
 LOCAL_CFLAGS := $(common_cflags) $(lib_cflags)
 LOCAL_SRC_FILES := $(lib_src_files)
 LOCAL_MODULE_TAGS := optional
