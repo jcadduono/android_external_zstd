@@ -86,6 +86,7 @@ LOCAL_MODULE := libzstd-static
 LOCAL_C_INCLUDES := $(lib_c_includes) $(common_c_includes)
 LOCAL_CFLAGS := $(common_cflags) $(lib_cflags)
 LOCAL_SRC_FILES := $(lib_src_files)
+LOCAL_SDK_VERSION := 21
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_STATIC_LIBRARY)
 
@@ -94,6 +95,7 @@ LOCAL_MODULE := libzstd
 LOCAL_C_INCLUDES := $(lib_c_includes) $(common_c_includes)
 LOCAL_CFLAGS := $(common_cflags) $(lib_cflags)
 LOCAL_SRC_FILES := $(lib_src_files)
+LOCAL_SDK_VERSION := 21
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_SHARED_LIBRARY)
 
@@ -102,6 +104,7 @@ LOCAL_MODULE := zstd
 LOCAL_C_INCLUDES := $(programs_c_includes) $(common_c_includes)
 LOCAL_CFLAGS := $(common_cflags) $(programs_cflags)
 LOCAL_SRC_FILES := $(programs_src_files)
+LOCAL_SDK_VERSION := 21
 LOCAL_MODULE_TAGS := optional
 ifdef ZSTD_STATIC
 	LOCAL_STATIC_LIBRARIES := libzstd-static
