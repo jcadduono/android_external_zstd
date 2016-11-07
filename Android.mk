@@ -28,6 +28,7 @@ lib_cflags := \
 	-O3
 
 lib_src_files := \
+	lib/common/error_private.c \
 	lib/common/entropy_common.c \
 	lib/common/xxhash.c \
 	lib/common/zstd_common.c \
