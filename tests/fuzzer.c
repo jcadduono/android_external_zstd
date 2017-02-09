@@ -27,7 +27,8 @@
 #include <time.h>         /* clock_t */
 #define ZSTD_STATIC_LINKING_ONLY   /* ZSTD_compressContinue, ZSTD_compressBlock */
 #include "zstd.h"         /* ZSTD_VERSION_STRING */
-#include "zstd_errors.h" /* ZSTD_getErrorCode */
+#include "zstd_errors.h"  /* ZSTD_getErrorCode */
+#define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"        /* ZDICT_trainFromBuffer */
 #include "datagen.h"      /* RDG_genBuffer */
 #include "mem.h"
@@ -246,6 +247,7 @@ static int basicUnitTests(U32 seed, double compressibility)
         size_t const sampleUnitSize = 8 KB;
         U32 const nbSamples = (U32)(totalSampleSize / sampleUnitSize);
         size_t* const samplesSizes = (size_t*) malloc(nbSamples * sizeof(size_t));
+        U32 dictID;
 
         if (dictBuffer==NULL || samplesSizes==NULL) {
             free(dictBuffer);
@@ -261,10 +263,9 @@ static int basicUnitTests(U32 seed, double compressibility)
         DISPLAYLEVEL(4, "OK, created dictionary of size %u \n", (U32)dictSize);
 
         DISPLAYLEVEL(4, "test%3i : check dictID : ", testNb++);
-        {   U32 const dictID = ZDICT_getDictID(dictBuffer, dictSize);
-            if (dictID==0) goto _output_error;
-            DISPLAYLEVEL(4, "OK : %u \n", dictID);
-        }
+        dictID = ZDICT_getDictID(dictBuffer, dictSize);
+        if (dictID==0) goto _output_error;
+        DISPLAYLEVEL(4, "OK : %u \n", dictID);
 
         DISPLAYLEVEL(4, "test%3i : compress with dictionary : ", testNb++);
         cSize = ZSTD_compress_usingDict(cctx, compressedBuffer, ZSTD_compressBound(CNBuffSize),
@@ -272,6 +273,18 @@ static int basicUnitTests(U32 seed, double compressibility)
                                         dictBuffer, dictSize, 4);
         if (ZSTD_isError(cSize)) goto _output_error;
         DISPLAYLEVEL(4, "OK (%u bytes : %.2f%%)\n", (U32)cSize, (double)cSize/CNBuffSize*100);
+
+        DISPLAYLEVEL(4, "test%3i : retrieve dictID from dictionary : ", testNb++);
+        {   U32 const did = ZSTD_getDictID_fromDict(dictBuffer, dictSize);
+            if (did != dictID) goto _output_error;   /* non-conformant (content-only) dictionary */
+        }
+        DISPLAYLEVEL(4, "OK \n");
+
+        DISPLAYLEVEL(4, "test%3i : retrieve dictID from frame : ", testNb++);
+        {   U32 const did = ZSTD_getDictID_fromFrame(compressedBuffer, cSize);
+            if (did != dictID) goto _output_error;   /* non-conformant (content-only) dictionary */
+        }
+        DISPLAYLEVEL(4, "OK \n");
 
         DISPLAYLEVEL(4, "test%3i : frame built with dictionary should be decompressible : ", testNb++);
         CHECKPLUS(r, ZSTD_decompress_usingDict(dctx,
@@ -298,6 +311,70 @@ static int basicUnitTests(U32 seed, double compressibility)
                                        dictBuffer, dictSize),
                   if (r != CNBuffSize) goto _output_error);
         DISPLAYLEVEL(4, "OK \n");
+
+        DISPLAYLEVEL(4, "test%3i : dictionary containing only header should return error : ", testNb++);
+        {
+          const size_t ret = ZSTD_decompress_usingDict(
+              dctx, decodedBuffer, CNBuffSize, compressedBuffer, cSize,
+              "\x37\xa4\x30\xec\x11\x22\x33\x44", 8);
+          if (ZSTD_getErrorCode(ret) != ZSTD_error_dictionary_corrupted) goto _output_error;
+        }
+        DISPLAYLEVEL(4, "OK \n");
+
+        ZSTD_freeCCtx(cctx);
+        ZSTD_freeDCtx(dctx);
+        free(dictBuffer);
+        free(samplesSizes);
+    }
+
+    /* COVER dictionary builder tests */
+    {   ZSTD_CCtx* const cctx = ZSTD_createCCtx();
+        ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+        size_t dictSize = 16 KB;
+        size_t optDictSize = dictSize;
+        void* dictBuffer = malloc(dictSize);
+        size_t const totalSampleSize = 1 MB;
+        size_t const sampleUnitSize = 8 KB;
+        U32 const nbSamples = (U32)(totalSampleSize / sampleUnitSize);
+        size_t* const samplesSizes = (size_t*) malloc(nbSamples * sizeof(size_t));
+        COVER_params_t params;
+        U32 dictID;
+
+        if (dictBuffer==NULL || samplesSizes==NULL) {
+            free(dictBuffer);
+            free(samplesSizes);
+            goto _output_error;
+        }
+
+        DISPLAYLEVEL(4, "test%3i : COVER_trainFromBuffer : ", testNb++);
+        { U32 u; for (u=0; u<nbSamples; u++) samplesSizes[u] = sampleUnitSize; }
+        memset(&params, 0, sizeof(params));
+        params.d = 1 + (FUZ_rand(&seed) % 16);
+        params.k = params.d + (FUZ_rand(&seed) % 256);
+        dictSize = COVER_trainFromBuffer(dictBuffer, dictSize,
+                                         CNBuffer, samplesSizes, nbSamples,
+                                         params);
+        if (ZDICT_isError(dictSize)) goto _output_error;
+        DISPLAYLEVEL(4, "OK, created dictionary of size %u \n", (U32)dictSize);
+
+        DISPLAYLEVEL(4, "test%3i : check dictID : ", testNb++);
+        dictID = ZDICT_getDictID(dictBuffer, dictSize);
+        if (dictID==0) goto _output_error;
+        DISPLAYLEVEL(4, "OK : %u \n", dictID);
+
+        DISPLAYLEVEL(4, "test%3i : COVER_optimizeTrainFromBuffer : ", testNb++);
+        memset(&params, 0, sizeof(params));
+        params.steps = 4;
+        optDictSize = COVER_optimizeTrainFromBuffer(dictBuffer, optDictSize,
+                                                    CNBuffer, samplesSizes, nbSamples,
+                                                    &params);
+        if (ZDICT_isError(optDictSize)) goto _output_error;
+        DISPLAYLEVEL(4, "OK, created dictionary of size %u \n", (U32)optDictSize);
+
+        DISPLAYLEVEL(4, "test%3i : check dictID : ", testNb++);
+        dictID = ZDICT_getDictID(dictBuffer, optDictSize);
+        if (dictID==0) goto _output_error;
+        DISPLAYLEVEL(4, "OK : %u \n", dictID);
 
         ZSTD_freeCCtx(cctx);
         ZSTD_freeDCtx(dctx);
@@ -678,6 +755,7 @@ static int fuzzerTests(U32 seed, U32 nbTests, unsigned startTest, U32 const maxD
                 CHECK (ZSTD_isError(errorCode), "ZSTD_copyCCtx error : %s", ZSTD_getErrorName(errorCode));
         }   }
         XXH64_reset(&xxhState, 0);
+        ZSTD_setCCtxParameter(ctx, ZSTD_p_forceWindow, FUZ_rand(&lseed) & 1);
         {   U32 const nbChunks = (FUZ_rand(&lseed) & 127) + 2;
             U32 n;
             for (totalTestSize=0, cSize=0, n=0 ; n<nbChunks ; n++) {

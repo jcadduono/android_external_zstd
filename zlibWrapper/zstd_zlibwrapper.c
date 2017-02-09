@@ -10,7 +10,9 @@
 
 #include <stdio.h>                 /* vsprintf */
 #include <stdarg.h>                /* va_list, for z_gzprintf */
-#include <zlib.h>
+#define NO_DUMMY_DECL
+#define ZLIB_CONST
+#include <zlib.h>                  /* without #define Z_PREFIX */
 #include "zstd_zlibwrapper.h"
 #define ZSTD_STATIC_LINKING_ONLY   /* ZSTD_MAGICNUMBER */
 #include "zstd.h"
@@ -22,8 +24,8 @@
 #define ZSTD_HEADERSIZE             ZSTD_frameHeaderSize_min
 #define ZWRAP_DEFAULT_CLEVEL        3   /* Z_DEFAULT_COMPRESSION is translated to ZWRAP_DEFAULT_CLEVEL for zstd */
 
-#define LOG_WRAPPERC(...)   /* printf(__VA_ARGS__) */
-#define LOG_WRAPPERD(...)   /* printf(__VA_ARGS__) */
+#define LOG_WRAPPERC(...)  /* printf(__VA_ARGS__) */
+#define LOG_WRAPPERD(...)  /* printf(__VA_ARGS__) */
 
 #define FINISH_WITH_GZ_ERR(msg) { (void)msg; return Z_STREAM_ERROR; }
 #define FINISH_WITH_NULL_ERR(msg) { (void)msg; return NULL; }
@@ -59,7 +61,7 @@ ZEXTERN const char * ZEXPORT z_zlibVersion OF((void)) { return zlibVersion();  }
 static void* ZWRAP_allocFunction(void* opaque, size_t size)
 {
     z_streamp strm = (z_streamp) opaque;
-    void* address = strm->zalloc(strm->opaque, 1, size);
+    void* address = strm->zalloc(strm->opaque, 1, (uInt)size);
   /*  printf("ZWRAP alloc %p, %d \n", address, (int)size); */
     return address;
 }
@@ -79,6 +81,8 @@ typedef enum { ZWRAP_useInit, ZWRAP_useReset, ZWRAP_streamEnd } ZWRAP_state_t;
 typedef struct {
     ZSTD_CStream* zbc;
     int compressionLevel;
+    int streamEnd; /* a flag to signal the end of a stream */
+    unsigned long long totalInBytes; /* we need it as strm->total_in can be reset by user */
     ZSTD_customMem customMem;
     z_stream allocFunc; /* copy of zalloc, zfree, opaque */
     ZSTD_inBuffer inBuffer;
@@ -86,6 +90,9 @@ typedef struct {
     ZWRAP_state_t comprState;
     unsigned long long pledgedSrcSize;
 } ZWRAP_CCtx;
+
+typedef ZWRAP_CCtx internal_state;
+
 
 
 size_t ZWRAP_freeCCtx(ZWRAP_CCtx* zwc)
@@ -124,7 +131,7 @@ int ZWRAP_initializeCStream(ZWRAP_CCtx* zwc, const void* dict, size_t dictSize, 
 {
     LOG_WRAPPERC("- ZWRAP_initializeCStream=%p\n", zwc);
     if (zwc == NULL || zwc->zbc == NULL) return Z_STREAM_ERROR;
-    
+
     if (!pledgedSrcSize) pledgedSrcSize = zwc->pledgedSrcSize;
     { ZSTD_parameters const params = ZSTD_getParams(zwc->compressionLevel, pledgedSrcSize, dictSize);
       size_t errorCode;
@@ -150,7 +157,7 @@ int ZWRAPC_finishWithErrorMsg(z_streamp strm, char* message)
     ZWRAP_CCtx* zwc = (ZWRAP_CCtx*) strm->state;
     strm->msg = message;
     if (zwc == NULL) return Z_STREAM_ERROR;
-    
+
     return ZWRAPC_finishWithError(zwc, strm, 0);
 }
 
@@ -159,7 +166,7 @@ int ZWRAP_setPledgedSrcSize(z_streamp strm, unsigned long long pledgedSrcSize)
 {
     ZWRAP_CCtx* zwc = (ZWRAP_CCtx*) strm->state;
     if (zwc == NULL) return Z_STREAM_ERROR;
-    
+
     zwc->pledgedSrcSize = pledgedSrcSize;
     zwc->comprState = ZWRAP_useInit;
     return Z_OK;
@@ -182,6 +189,8 @@ ZEXTERN int ZEXPORT z_deflateInit_ OF((z_streamp strm, int level,
     if (level == Z_DEFAULT_COMPRESSION)
         level = ZWRAP_DEFAULT_CLEVEL;
 
+    zwc->streamEnd = 0;
+    zwc->totalInBytes = 0;
     zwc->compressionLevel = level;
     strm->state = (struct internal_state*) zwc; /* use state which in not used by user */
     strm->total_in = 0;
@@ -209,6 +218,13 @@ int ZWRAP_deflateReset_keepDict(z_streamp strm)
     if (!g_ZWRAP_useZSTDcompression)
         return deflateReset(strm);
 
+    { ZWRAP_CCtx* zwc = (ZWRAP_CCtx*) strm->state;
+      if (zwc) { 
+          zwc->streamEnd = 0;
+          zwc->totalInBytes = 0;
+      }
+    }
+
     strm->total_in = 0;
     strm->total_out = 0;
     strm->adler = 0;
@@ -221,11 +237,11 @@ ZEXTERN int ZEXPORT z_deflateReset OF((z_streamp strm))
     LOG_WRAPPERC("- deflateReset\n");
     if (!g_ZWRAP_useZSTDcompression)
         return deflateReset(strm);
-    
+
     ZWRAP_deflateReset_keepDict(strm);
 
     { ZWRAP_CCtx* zwc = (ZWRAP_CCtx*) strm->state;
-      if (zwc) zwc->comprState = 0;
+      if (zwc) zwc->comprState = ZWRAP_useInit;
     }
     return Z_OK;
 }
@@ -273,12 +289,12 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
     if (zwc->zbc == NULL) {
         int res;
         zwc->zbc = ZSTD_createCStream_advanced(zwc->customMem);
-        if (zwc->zbc == NULL) return ZWRAPC_finishWithError(zwc, strm, 0); 
+        if (zwc->zbc == NULL) return ZWRAPC_finishWithError(zwc, strm, 0);
         res = ZWRAP_initializeCStream(zwc, NULL, 0, (flush == Z_FINISH) ? strm->avail_in : 0);
         if (res != Z_OK) return ZWRAPC_finishWithError(zwc, strm, res);
         if (flush != Z_FINISH) zwc->comprState = ZWRAP_useReset;
     } else {
-        if (strm->total_in == 0) {
+        if (zwc->totalInBytes == 0) {
             if (zwc->comprState == ZWRAP_useReset) {
                 size_t const errorCode = ZSTD_resetCStream(zwc->zbc, (flush == Z_FINISH) ? strm->avail_in : zwc->pledgedSrcSize);
                 if (ZSTD_isError(errorCode)) { LOG_WRAPPERC("ERROR: ZSTD_resetCStream errorCode=%s\n", ZSTD_getErrorName(errorCode)); return ZWRAPC_finishWithError(zwc, strm, 0); }
@@ -290,7 +306,7 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
         }
     }
 
-    LOG_WRAPPERC("- deflate1 flush=%d avail_in=%d avail_out=%d total_in=%d total_out=%d\n", (int)flush, (int)strm->avail_in, (int)strm->avail_out, (int)strm->total_in, (int)strm->total_out);
+    LOG_WRAPPERC("- deflate2 flush=%d avail_in=%d avail_out=%d total_in=%d total_out=%d\n", (int)flush, (int)strm->avail_in, (int)strm->avail_out, (int)strm->total_in, (int)strm->total_out);
     if (strm->avail_in > 0) {
         zwc->inBuffer.src = strm->next_in;
         zwc->inBuffer.size = strm->avail_in;
@@ -306,14 +322,21 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
         strm->total_out += zwc->outBuffer.pos;
         strm->avail_out -= zwc->outBuffer.pos;
         strm->total_in += zwc->inBuffer.pos;
+        zwc->totalInBytes += zwc->inBuffer.pos;
         strm->next_in += zwc->inBuffer.pos;
         strm->avail_in -= zwc->inBuffer.pos;
     }
 
-    if (flush == Z_FULL_FLUSH || flush == Z_BLOCK || flush == Z_TREES) return ZWRAPC_finishWithErrorMsg(strm, "Z_FULL_FLUSH, Z_BLOCK and Z_TREES are not supported!");
+    if (flush == Z_FULL_FLUSH
+#if ZLIB_VERNUM >= 0x1240
+        || flush == Z_TREES
+#endif
+        || flush == Z_BLOCK)
+        return ZWRAPC_finishWithErrorMsg(strm, "Z_FULL_FLUSH, Z_BLOCK and Z_TREES are not supported!");
 
     if (flush == Z_FINISH) {
         size_t bytesLeft;
+        if (zwc->streamEnd) return Z_STREAM_END;
         zwc->outBuffer.dst = strm->next_out;
         zwc->outBuffer.size = strm->avail_out;
         zwc->outBuffer.pos = 0;
@@ -323,7 +346,7 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
         strm->next_out += zwc->outBuffer.pos;
         strm->total_out += zwc->outBuffer.pos;
         strm->avail_out -= zwc->outBuffer.pos;
-        if (bytesLeft == 0) { LOG_WRAPPERC("Z_STREAM_END2 strm->total_in=%d strm->avail_out=%d strm->total_out=%d\n", (int)strm->total_in, (int)strm->avail_out, (int)strm->total_out); return Z_STREAM_END; }
+        if (bytesLeft == 0) { zwc->streamEnd = 1; LOG_WRAPPERC("Z_STREAM_END2 strm->total_in=%d strm->avail_out=%d strm->total_out=%d\n", (int)strm->total_in, (int)strm->avail_out, (int)strm->total_out); return Z_STREAM_END; }
     }
     else
     if (flush == Z_SYNC_FLUSH || flush == Z_PARTIAL_FLUSH) {
@@ -338,7 +361,7 @@ ZEXTERN int ZEXPORT z_deflate OF((z_streamp strm, int flush))
         strm->total_out += zwc->outBuffer.pos;
         strm->avail_out -= zwc->outBuffer.pos;
     }
-    LOG_WRAPPERC("- deflate2 flush=%d avail_in=%d avail_out=%d total_in=%d total_out=%d\n", (int)flush, (int)strm->avail_in, (int)strm->avail_out, (int)strm->total_in, (int)strm->total_out);
+    LOG_WRAPPERC("- deflate3 flush=%d avail_in=%d avail_out=%d total_in=%d total_out=%d\n", (int)flush, (int)strm->avail_in, (int)strm->avail_out, (int)strm->total_in, (int)strm->total_out);
     return Z_OK;
 }
 
@@ -394,6 +417,7 @@ typedef struct {
     ZSTD_DStream* zbd;
     char headerBuf[16]; /* should be equal or bigger than ZSTD_frameHeaderSize_min */
     int errorCount;
+    unsigned long long totalInBytes; /* we need it as strm->total_in can be reset by user */
     ZWRAP_state_t decompState;
     ZSTD_inBuffer inBuffer;
     ZSTD_outBuffer outBuffer;
@@ -407,7 +431,7 @@ typedef struct {
 } ZWRAP_DCtx;
 
 
-int ZWRAP_isUsingZSTDdecompression(z_streamp strm) 
+int ZWRAP_isUsingZSTDdecompression(z_streamp strm)
 {
     if (strm == NULL) return 0;
     return (strm->reserved == ZWRAP_ZSTD_STREAM);
@@ -441,7 +465,7 @@ ZWRAP_DCtx* ZWRAP_createDCtx(z_streamp strm)
         memcpy(&zwd->customMem, &defaultCustomMem, sizeof(ZSTD_customMem));
     }
 
-    MEM_STATIC_ASSERT(sizeof(zwd->headerBuf) >= ZSTD_frameHeaderSize_min);   /* if compilation fails here, assertion is false */
+    MEM_STATIC_ASSERT(sizeof(zwd->headerBuf) >= ZSTD_FRAMEHEADERSIZE_MIN);   /* if compilation fails here, assertion is false */
     ZWRAP_initDCtx(zwd);
     return zwd;
 }
@@ -471,7 +495,7 @@ int ZWRAPD_finishWithErrorMsg(z_streamp strm, char* message)
     ZWRAP_DCtx* zwd = (ZWRAP_DCtx*) strm->state;
     strm->msg = message;
     if (zwd == NULL) return Z_STREAM_ERROR;
-    
+
     return ZWRAPD_finishWithError(zwd, strm, 0);
 }
 
@@ -494,6 +518,7 @@ ZEXTERN int ZEXPORT z_inflateInit_ OF((z_streamp strm,
     strcpy(zwd->version, version);
 
     zwd->stream_size = stream_size;
+    zwd->totalInBytes = 0;
     strm->state = (struct internal_state*) zwd; /* use state which in not used by user */
     strm->total_in = 0;
     strm->total_out = 0;
@@ -511,9 +536,10 @@ ZEXTERN int ZEXPORT z_inflateInit2_ OF((z_streamp strm, int  windowBits,
     if (g_ZWRAPdecompressionType == ZWRAP_FORCE_ZLIB) {
         return inflateInit2_(strm, windowBits, version, stream_size);
     }
-    
+
     {
     int ret = z_inflateInit_ (strm, version, stream_size);
+    LOG_WRAPPERD("- inflateInit2 windowBits=%d\n", windowBits);
     if (ret == Z_OK) {
         ZWRAP_DCtx* zwd = (ZWRAP_DCtx*)strm->state;
         if (zwd == NULL) return Z_STREAM_ERROR;
@@ -533,8 +559,9 @@ int ZWRAP_inflateReset_keepDict(z_streamp strm)
         if (zwd == NULL) return Z_STREAM_ERROR;
         ZWRAP_initDCtx(zwd);
         zwd->decompState = ZWRAP_useReset;
+        zwd->totalInBytes = 0;
     }
-    
+
     strm->total_in = 0;
     strm->total_out = 0;
     return Z_OK;
@@ -551,7 +578,7 @@ ZEXTERN int ZEXPORT z_inflateReset OF((z_streamp strm))
       if (ret != Z_OK) return ret; }
 
     { ZWRAP_DCtx* zwd = (ZWRAP_DCtx*) strm->state;
-      if (zwd == NULL) return Z_STREAM_ERROR;    
+      if (zwd == NULL) return Z_STREAM_ERROR;
       zwd->decompState = ZWRAP_useInit; }
 
     return Z_OK;
@@ -590,11 +617,11 @@ ZEXTERN int ZEXPORT z_inflateSetDictionary OF((z_streamp strm,
         if (zwd == NULL || zwd->zbd == NULL) return Z_STREAM_ERROR;
         errorCode = ZSTD_initDStream_usingDict(zwd->zbd, dictionary, dictLength);
         if (ZSTD_isError(errorCode)) return ZWRAPD_finishWithError(zwd, strm, 0);
-        zwd->decompState = ZWRAP_useReset; 
+        zwd->decompState = ZWRAP_useReset;
 
-        if (strm->total_in == ZSTD_HEADERSIZE) {
+        if (zwd->totalInBytes == ZSTD_HEADERSIZE) {
             zwd->inBuffer.src = zwd->headerBuf;
-            zwd->inBuffer.size = strm->total_in;
+            zwd->inBuffer.size = zwd->totalInBytes;
             zwd->inBuffer.pos = 0;
             zwd->outBuffer.dst = strm->next_out;
             zwd->outBuffer.size = 0;
@@ -632,8 +659,8 @@ ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
         if (zwd == NULL) return Z_STREAM_ERROR;
         if (zwd->decompState == ZWRAP_streamEnd) return Z_STREAM_END;
 
-        if (strm->total_in < ZLIB_HEADERSIZE) {
-            if (strm->total_in == 0 && strm->avail_in >= ZLIB_HEADERSIZE) {
+        if (zwd->totalInBytes < ZLIB_HEADERSIZE) {
+            if (zwd->totalInBytes == 0 && strm->avail_in >= ZLIB_HEADERSIZE) {
                 if (MEM_readLE32(strm->next_in) != ZSTD_MAGICNUMBER) {
                     if (zwd->windowBits)
                         errorCode = inflateInit2_(strm, zwd->windowBits, zwd->version, zwd->stream_size);
@@ -650,12 +677,13 @@ ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
                     return res;
                 }
             } else {
-                srcSize = MIN(strm->avail_in, ZLIB_HEADERSIZE - strm->total_in);
-                memcpy(zwd->headerBuf+strm->total_in, strm->next_in, srcSize);
+                srcSize = MIN(strm->avail_in, ZLIB_HEADERSIZE - zwd->totalInBytes);
+                memcpy(zwd->headerBuf+zwd->totalInBytes, strm->next_in, srcSize);
                 strm->total_in += srcSize;
+                zwd->totalInBytes += srcSize;
                 strm->next_in += srcSize;
                 strm->avail_in -= srcSize;
-                if (strm->total_in < ZLIB_HEADERSIZE) return Z_OK;
+                if (zwd->totalInBytes < ZLIB_HEADERSIZE) return Z_OK;
 
                 if (MEM_readLE32(zwd->headerBuf) != ZSTD_MAGICNUMBER) {
                     z_stream strm2;
@@ -707,9 +735,9 @@ ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
             zwd->decompState = ZWRAP_useInit;
         }
 
-        if (strm->total_in < ZSTD_HEADERSIZE)
+        if (zwd->totalInBytes < ZSTD_HEADERSIZE)
         {
-            if (strm->total_in == 0 && strm->avail_in >= ZSTD_HEADERSIZE) {
+            if (zwd->totalInBytes == 0 && strm->avail_in >= ZSTD_HEADERSIZE) {
                 if (zwd->decompState == ZWRAP_useInit) {
                     errorCode = ZSTD_initDStream(zwd->zbd);
                     if (ZSTD_isError(errorCode)) { LOG_WRAPPERD("ERROR: ZSTD_initDStream errorCode=%s\n", ZSTD_getErrorName(errorCode)); goto error; }
@@ -718,12 +746,13 @@ ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
                     if (ZSTD_isError(errorCode)) goto error;
                 }
             } else {
-                srcSize = MIN(strm->avail_in, ZSTD_HEADERSIZE - strm->total_in);
-                memcpy(zwd->headerBuf+strm->total_in, strm->next_in, srcSize);
+                srcSize = MIN(strm->avail_in, ZSTD_HEADERSIZE - zwd->totalInBytes);
+                memcpy(zwd->headerBuf+zwd->totalInBytes, strm->next_in, srcSize);
                 strm->total_in += srcSize;
+                zwd->totalInBytes += srcSize;
                 strm->next_in += srcSize;
                 strm->avail_in -= srcSize;
-                if (strm->total_in < ZSTD_HEADERSIZE) return Z_OK;
+                if (zwd->totalInBytes < ZSTD_HEADERSIZE) return Z_OK;
 
                 if (zwd->decompState == ZWRAP_useInit) {
                     errorCode = ZSTD_initDStream(zwd->zbd);
@@ -767,11 +796,12 @@ ZEXTERN int ZEXPORT z_inflate OF((z_streamp strm, int flush))
         strm->total_out += zwd->outBuffer.pos;
         strm->avail_out -= zwd->outBuffer.pos;
         strm->total_in += zwd->inBuffer.pos;
+        zwd->totalInBytes += zwd->inBuffer.pos;
         strm->next_in += zwd->inBuffer.pos;
         strm->avail_in -= zwd->inBuffer.pos;
-        if (errorCode == 0) { 
-            LOG_WRAPPERD("inflate Z_STREAM_END1 avail_in=%d avail_out=%d total_in=%d total_out=%d\n", (int)strm->avail_in, (int)strm->avail_out, (int)strm->total_in, (int)strm->total_out); 
-            zwd->decompState = ZWRAP_streamEnd; 
+        if (errorCode == 0) {
+            LOG_WRAPPERD("inflate Z_STREAM_END1 avail_in=%d avail_out=%d total_in=%d total_out=%d\n", (int)strm->avail_in, (int)strm->avail_out, (int)strm->total_in, (int)strm->total_out);
+            zwd->decompState = ZWRAP_streamEnd;
             return Z_STREAM_END;
         }
     }
@@ -1010,220 +1040,6 @@ ZEXTERN int ZEXPORT z_uncompress OF((Bytef *dest,   uLongf *destLen,
     return Z_OK;
 }
 
-
-
-                        /* gzip file access functions */
-ZEXTERN gzFile ZEXPORT z_gzopen OF((const char *path, const char *mode))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzopen(path, mode);
-    FINISH_WITH_NULL_ERR("gzopen is not supported!");
-}
-
-
-ZEXTERN gzFile ZEXPORT z_gzdopen OF((int fd, const char *mode))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzdopen(fd, mode);
-    FINISH_WITH_NULL_ERR("gzdopen is not supported!");
-}
-
-
-#if ZLIB_VERNUM >= 0x1240
-ZEXTERN int ZEXPORT z_gzbuffer OF((gzFile file, unsigned size))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzbuffer(file, size);
-    FINISH_WITH_GZ_ERR("gzbuffer is not supported!");
-}
-
-
-ZEXTERN z_off_t ZEXPORT z_gzoffset OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzoffset(file);
-    FINISH_WITH_GZ_ERR("gzoffset is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzclose_r OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzclose_r(file);
-    FINISH_WITH_GZ_ERR("gzclose_r is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzclose_w OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzclose_w(file);
-    FINISH_WITH_GZ_ERR("gzclose_w is not supported!");
-}
-#endif
-
-
-ZEXTERN int ZEXPORT z_gzsetparams OF((gzFile file, int level, int strategy))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzsetparams(file, level, strategy);
-    FINISH_WITH_GZ_ERR("gzsetparams is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzread OF((gzFile file, voidp buf, unsigned len))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzread(file, buf, len);
-    FINISH_WITH_GZ_ERR("gzread is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzwrite OF((gzFile file,
-                                voidpc buf, unsigned len))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzwrite(file, buf, len);
-    FINISH_WITH_GZ_ERR("gzwrite is not supported!");
-}
-
-
-#if ZLIB_VERNUM >= 0x1260
-ZEXTERN int ZEXPORTVA z_gzprintf Z_ARG((gzFile file, const char *format, ...))
-#else
-ZEXTERN int ZEXPORTVA z_gzprintf OF((gzFile file, const char *format, ...))
-#endif
-{
-    if (!g_ZWRAP_useZSTDcompression) {
-        int ret;
-        char buf[1024];
-        va_list args;
-        va_start (args, format);
-        ret = vsprintf (buf, format, args);
-        va_end (args);
-
-        ret = gzprintf(file, buf);
-        return ret;
-    }
-    FINISH_WITH_GZ_ERR("gzprintf is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzputs OF((gzFile file, const char *s))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzputs(file, s);
-    FINISH_WITH_GZ_ERR("gzputs is not supported!");
-}
-
-
-ZEXTERN char * ZEXPORT z_gzgets OF((gzFile file, char *buf, int len))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzgets(file, buf, len);
-    FINISH_WITH_NULL_ERR("gzgets is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzputc OF((gzFile file, int c))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzputc(file, c);
-    FINISH_WITH_GZ_ERR("gzputc is not supported!");
-}
-
-
-#if ZLIB_VERNUM == 0x1260
-ZEXTERN int ZEXPORT z_gzgetc_ OF((gzFile file))
-#else
-ZEXTERN int ZEXPORT z_gzgetc OF((gzFile file))
-#endif
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzgetc(file);
-    FINISH_WITH_GZ_ERR("gzgetc is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzungetc OF((int c, gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzungetc(c, file);
-    FINISH_WITH_GZ_ERR("gzungetc is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzflush OF((gzFile file, int flush))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzflush(file, flush);
-    FINISH_WITH_GZ_ERR("gzflush is not supported!");
-}
-
-
-ZEXTERN z_off_t ZEXPORT z_gzseek OF((gzFile file, z_off_t offset, int whence))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzseek(file, offset, whence);
-    FINISH_WITH_GZ_ERR("gzseek is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT    z_gzrewind OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzrewind(file);
-    FINISH_WITH_GZ_ERR("gzrewind is not supported!");
-}
-
-
-ZEXTERN z_off_t ZEXPORT    z_gztell OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gztell(file);
-    FINISH_WITH_GZ_ERR("gztell is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzeof OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzeof(file);
-    FINISH_WITH_GZ_ERR("gzeof is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT z_gzdirect OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzdirect(file);
-    FINISH_WITH_GZ_ERR("gzdirect is not supported!");
-}
-
-
-ZEXTERN int ZEXPORT    z_gzclose OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzclose(file);
-    FINISH_WITH_GZ_ERR("gzclose is not supported!");
-}
-
-
-ZEXTERN const char * ZEXPORT z_gzerror OF((gzFile file, int *errnum))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        return gzerror(file, errnum);
-    FINISH_WITH_NULL_ERR("gzerror is not supported!");
-}
-
-
-ZEXTERN void ZEXPORT z_gzclearerr OF((gzFile file))
-{
-    if (!g_ZWRAP_useZSTDcompression)
-        gzclearerr(file);
-}
-
-
 #endif /* !Z_SOLO */
 
 
@@ -1238,3 +1054,24 @@ ZEXTERN uLong ZEXPORT z_crc32   OF((uLong crc, const Bytef *buf, uInt len))
 {
     return crc32(crc, buf, len);
 }
+
+
+#if ZLIB_VERNUM >= 0x12B0
+ZEXTERN uLong ZEXPORT z_adler32_z OF((uLong adler, const Bytef *buf, z_size_t len))
+{
+    return adler32_z(adler, buf, len);
+}
+
+ZEXTERN uLong ZEXPORT z_crc32_z OF((uLong crc, const Bytef *buf, z_size_t len))
+{
+    return crc32_z(crc, buf, len);
+}
+#endif
+
+
+#if ZLIB_VERNUM >= 0x1270
+ZEXTERN const z_crc_t FAR * ZEXPORT z_get_crc_table    OF((void))
+{
+    return get_crc_table();
+}
+#endif

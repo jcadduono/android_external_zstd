@@ -41,7 +41,7 @@ SET(ROOT_DIR ../../..)
 SET(LIBRARY_DIR ${ROOT_DIR}/lib)
 SET(PROGRAMS_DIR ${ROOT_DIR}/programs)
 SET(TESTS_DIR ${ROOT_DIR}/tests)
-INCLUDE_DIRECTORIES(${TESTS_DIR} ${PROGRAMS_DIR} ${LIBRARY_DIR} ${LIBRARY_DIR}/common ${LIBRARY_DIR}/dictBuilder)
+INCLUDE_DIRECTORIES(${TESTS_DIR} ${PROGRAMS_DIR} ${LIBRARY_DIR} ${LIBRARY_DIR}/common ${LIBRARY_DIR}/compress ${LIBRARY_DIR}/dictBuilder)
 
 ADD_EXECUTABLE(fullbench ${PROGRAMS_DIR}/datagen.c ${TESTS_DIR}/fullbench.c)
 TARGET_LINK_LIBRARIES(fullbench libzstd_static)
@@ -50,9 +50,6 @@ ADD_EXECUTABLE(fuzzer ${PROGRAMS_DIR}/datagen.c ${TESTS_DIR}/fuzzer.c)
 TARGET_LINK_LIBRARIES(fuzzer libzstd_static)
 
 IF (UNIX)
-    ADD_EXECUTABLE(zbufftest ${PROGRAMS_DIR}/datagen.c ${TESTS_DIR}/zbufftest.c)
-    TARGET_LINK_LIBRARIES(zbufftest libzstd_static)
-
     ADD_EXECUTABLE(paramgrill ${PROGRAMS_DIR}/datagen.c ${TESTS_DIR}/paramgrill.c)
     TARGET_LINK_LIBRARIES(paramgrill libzstd_static m) #m is math library
 

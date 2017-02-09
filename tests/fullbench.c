@@ -17,11 +17,16 @@
 #include <time.h>        /* clock_t, clock, CLOCKS_PER_SEC */
 
 #include "mem.h"
-#include "zstd_internal.h"   /* ZSTD_blockHeaderSize, blockType_e, KB, MB */
-#define ZSTD_STATIC_LINKING_ONLY  /* ZSTD_compressBegin, ZSTD_compressContinue, etc. */
+#ifndef ZSTD_DLL_IMPORT
+    #include "zstd_internal.h"   /* ZSTD_blockHeaderSize, blockType_e, KB, MB */
+    #define ZSTD_STATIC_LINKING_ONLY  /* ZSTD_compressBegin, ZSTD_compressContinue, etc. */
+#else
+    #define KB *(1 <<10)
+    #define MB *(1 <<20)
+    #define GB *(1U<<30)
+    typedef enum { bt_raw, bt_rle, bt_compressed, bt_reserved } blockType_e; 
+#endif
 #include "zstd.h"            /* ZSTD_VERSION_STRING */
-#define FSE_STATIC_LINKING_ONLY   /* FSE_DTABLE_SIZE_U32 */
-#include "fse.h"
 #include "datagen.h"
 
 
@@ -111,6 +116,7 @@ size_t local_ZSTD_decompress(void* dst, size_t dstSize, void* buff2, const void*
     return ZSTD_decompress(dst, dstSize, buff2, g_cSize);
 }
 
+#ifndef ZSTD_DLL_IMPORT
 static ZSTD_DCtx* g_zdc = NULL;
 extern size_t ZSTD_decodeLiteralsBlock(ZSTD_DCtx* ctx, const void* src, size_t srcSize);
 size_t local_ZSTD_decodeLiteralsBlock(void* dst, size_t dstSize, void* buff2, const void* src, size_t srcSize)
@@ -127,7 +133,7 @@ size_t local_ZSTD_decodeSeqHeaders(void* dst, size_t dstSize, void* buff2, const
     (void)src; (void)srcSize; (void)dst; (void)dstSize;
     return ZSTD_decodeSeqHeaders(g_zdc, &nbSeq, buff2, g_cSize);
 }
-
+#endif
 
 static ZSTD_CStream* g_cstream= NULL;
 size_t local_ZSTD_compressStream(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
@@ -164,12 +170,30 @@ static size_t local_ZSTD_decompressStream(void* dst, size_t dstCapacity, void* b
     return buffOut.pos;
 }
 
+#ifndef ZSTD_DLL_IMPORT
 static ZSTD_CCtx* g_zcc = NULL;
 size_t local_ZSTD_compressContinue(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
 {
     (void)buff2;
     ZSTD_compressBegin(g_zcc, 1);
     return ZSTD_compressEnd(g_zcc, dst, dstCapacity, src, srcSize);
+}
+
+#define FIRST_BLOCK_SIZE 8
+size_t local_ZSTD_compressContinue_extDict(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
+{
+    BYTE firstBlockBuf[FIRST_BLOCK_SIZE];
+
+    (void)buff2;
+    memcpy(firstBlockBuf, src, FIRST_BLOCK_SIZE);
+    ZSTD_compressBegin(g_zcc, 1);
+
+    {   size_t const compressResult = ZSTD_compressContinue(g_zcc, dst, dstCapacity, firstBlockBuf, FIRST_BLOCK_SIZE);
+        if (ZSTD_isError(compressResult)) { DISPLAY("local_ZSTD_compressContinue_extDict error : %s\n", ZSTD_getErrorName(compressResult)); return compressResult; }
+        dst = (BYTE*)dst + compressResult;
+        dstCapacity -= compressResult;
+    }
+    return ZSTD_compressEnd(g_zcc, dst, dstCapacity, (const BYTE*)src + FIRST_BLOCK_SIZE, srcSize - FIRST_BLOCK_SIZE);
 }
 
 size_t local_ZSTD_decompressContinue(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
@@ -193,6 +217,7 @@ size_t local_ZSTD_decompressContinue(void* dst, size_t dstCapacity, void* buff2,
 
     return regeneratedSize;
 }
+#endif
 
 
 /*_*******************************************************
@@ -216,19 +241,24 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
     case 2:
         benchFunction = local_ZSTD_decompress; benchName = "ZSTD_decompress";
         break;
+#ifndef ZSTD_DLL_IMPORT
     case 11:
         benchFunction = local_ZSTD_compressContinue; benchName = "ZSTD_compressContinue";
         break;
     case 12:
+        benchFunction = local_ZSTD_compressContinue_extDict; benchName = "ZSTD_compressContinue_extDict";
+        break;
+    case 13:
         benchFunction = local_ZSTD_decompressContinue; benchName = "ZSTD_decompressContinue";
         break;
-    case 31:
+	case 31:
         benchFunction = local_ZSTD_decodeLiteralsBlock; benchName = "ZSTD_decodeLiteralsBlock";
         break;
     case 32:
         benchFunction = local_ZSTD_decodeSeqHeaders; benchName = "ZSTD_decodeSeqHeaders";
         break;
-    case 41:
+#endif
+	case 41:
         benchFunction = local_ZSTD_compressStream; benchName = "ZSTD_compressStream";
         break;
     case 42:
@@ -253,10 +283,14 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
     case 2:
         g_cSize = ZSTD_compress(buff2, dstBuffSize, src, srcSize, 1);
         break;
+#ifndef ZSTD_DLL_IMPORT
     case 11 :
         if (g_zcc==NULL) g_zcc = ZSTD_createCCtx();
         break;
     case 12 :
+        if (g_zcc==NULL) g_zcc = ZSTD_createCCtx();
+        break;
+    case 13 :
         if (g_zdc==NULL) g_zdc = ZSTD_createDCtx();
         g_cSize = ZSTD_compress(buff2, dstBuffSize, src, srcSize, 1);
         break;
@@ -304,6 +338,10 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
             srcSize = srcSize > 128 KB ? 128 KB : srcSize;   /* speed relative to block */
             break;
         }
+#else
+    case 31:
+        goto _cleanOut;
+#endif
     case 41 :
         if (g_cstream==NULL) g_cstream = ZSTD_createCStream();
         break;

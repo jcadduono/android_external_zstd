@@ -14,40 +14,68 @@ ZWRAPDIR = zlibWrapper
 TESTDIR  = tests
 
 # Define nul output
-ifneq (,$(filter Windows%,$(OS)))
-VOID = nul
-else
 VOID = /dev/null
+
+ifneq (,$(filter Windows%,$(OS)))
+EXT =.exe
+else
+EXT =
 endif
 
-.PHONY: default all zlibwrapper zstd clean install uninstall travis-install test clangtest gpptest armtest usan asan uasan
+.PHONY: default
+default: lib zstd-release
 
-default: libzstd zstd
+.PHONY: all
+all: allmost
+	CPPFLAGS=-I../lib LDFLAGS=-L../lib $(MAKE) -C examples/ $@
 
-all:
-	$(MAKE) -C $(ZSTDDIR) $@
-	$(MAKE) -C $(PRGDIR) $@ zstd32
-	$(MAKE) -C $(TESTDIR) $@ all32
+.PHONY: allmost
+allmost:
+	$(MAKE) -C $(ZSTDDIR) all
+	$(MAKE) -C $(PRGDIR) all
+	$(MAKE) -C $(TESTDIR) all
+	$(MAKE) -C $(ZWRAPDIR) all
 
-libzstd:
+.PHONY: all32
+all32:
+	$(MAKE) -C $(PRGDIR) zstd32
+	$(MAKE) -C $(TESTDIR) all32
+
+.PHONY: lib
+lib:
 	@$(MAKE) -C $(ZSTDDIR)
 
+.PHONY: zstd
 zstd:
-	@$(MAKE) -C $(PRGDIR)
-	cp $(PRGDIR)/zstd .
+	@$(MAKE) -C $(PRGDIR) $@
+	cp $(PRGDIR)/zstd$(EXT) .
 
+.PHONY: zstd-release
+zstd-release:
+	@$(MAKE) -C $(PRGDIR)
+	cp $(PRGDIR)/zstd$(EXT) .
+
+.PHONY: zstdmt
+zstdmt:
+	@$(MAKE) -C $(PRGDIR) $@
+	cp $(PRGDIR)/zstd$(EXT) ./zstdmt$(EXT)
+
+.PHONY: zlibwrapper
 zlibwrapper:
 	$(MAKE) -C $(ZWRAPDIR) test
 
+.PHONY: test
 test:
 	$(MAKE) -C $(TESTDIR) $@
 
+.PHONY: clean
 clean:
 	@$(MAKE) -C $(ZSTDDIR) $@ > $(VOID)
 	@$(MAKE) -C $(PRGDIR) $@ > $(VOID)
 	@$(MAKE) -C $(TESTDIR) $@ > $(VOID)
 	@$(MAKE) -C $(ZWRAPDIR) $@ > $(VOID)
-	@$(RM) zstd
+	@$(MAKE) -C examples/ $@ > $(VOID)
+	@$(RM) zstd$(EXT) zstdmt$(EXT) tmp*
 	@echo Cleaning completed
 
 
@@ -56,6 +84,8 @@ clean:
 #------------------------------------------------------------------------------
 ifneq (,$(filter $(shell uname),Linux Darwin GNU/kFreeBSD GNU FreeBSD DragonFly NetBSD))
 HOST_OS = POSIX
+.PHONY: install uninstall travis-install clangtest gpptest armtest usan asan uasan
+
 install:
 	@$(MAKE) -C $(ZSTDDIR) $@
 	@$(MAKE) -C $(PRGDIR) $@
@@ -68,7 +98,7 @@ travis-install:
 	$(MAKE) install PREFIX=~/install_test_dir
 
 gpptest: clean
-	$(MAKE) -C programs all CC=g++ CFLAGS="-O3 -Wall -Wextra -Wundef -Wshadow -Wcast-align -Werror"
+	CC=g++ $(MAKE) -C programs all CFLAGS="-O3 -Wall -Wextra -Wundef -Wshadow -Wcast-align -Werror"
 
 gcc5test: clean
 	gcc-5 -v
@@ -84,15 +114,19 @@ clangtest: clean
 
 armtest: clean
 	$(MAKE) -C $(TESTDIR) datagen   # use native, faster
-	$(MAKE) -C $(TESTDIR) test CC=arm-linux-gnueabi-gcc ZSTDRTTEST= MOREFLAGS="-Werror -static"
+	$(MAKE) -C $(TESTDIR) test CC=arm-linux-gnueabi-gcc QEMU_SYS=qemu-arm-static ZSTDRTTEST= MOREFLAGS="-Werror -static"
+
+aarch64test:
+	$(MAKE) -C $(TESTDIR) datagen   # use native, faster
+	$(MAKE) -C $(TESTDIR) test CC=aarch64-linux-gnu-gcc QEMU_SYS=qemu-aarch64-static ZSTDRTTEST= MOREFLAGS="-Werror -static"
 
 ppctest: clean
 	$(MAKE) -C $(TESTDIR) datagen   # use native, faster
-	$(MAKE) -C $(TESTDIR) test CC=powerpc-linux-gnu-gcc ZSTDRTTEST= MOREFLAGS="-Werror -Wno-attributes -static"
+	$(MAKE) -C $(TESTDIR) test CC=powerpc-linux-gnu-gcc QEMU_SYS=qemu-ppc-static ZSTDRTTEST= MOREFLAGS="-Werror -Wno-attributes -static"
 
 ppc64test: clean
 	$(MAKE) -C $(TESTDIR) datagen   # use native, faster
-	$(MAKE) -C $(TESTDIR) test CC=powerpc-linux-gnu-gcc ZSTDRTTEST= MOREFLAGS="-m64 -static"
+	$(MAKE) -C $(TESTDIR) test CC=powerpc-linux-gnu-gcc QEMU_SYS=qemu-ppc64-static ZSTDRTTEST= MOREFLAGS="-m64 -static"
 
 usan: clean
 	$(MAKE) test CC=clang MOREFLAGS="-g -fsanitize=undefined"
@@ -135,13 +169,13 @@ gnu90test: clean
 	CFLAGS="-std=gnu90" $(MAKE) all
 
 c99test: clean
-	CFLAGS="-std=c99" $(MAKE) all
+	CFLAGS="-std=c99" $(MAKE) allmost
 
 gnu99test: clean
 	CFLAGS="-std=gnu99" $(MAKE) all
 
 c11test: clean
-	CFLAGS="-std=c11" $(MAKE) all
+	CFLAGS="-std=c11" $(MAKE) allmost
 
 bmix64test: clean
 	CFLAGS="-O3 -mbmi -Werror" $(MAKE) -C $(TESTDIR) test
