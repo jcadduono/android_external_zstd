@@ -5,11 +5,17 @@ zstd_version_minor := `sed -n '/define ZSTD_VERSION_MINOR/s/.*[[:blank:]]\([0-9]
 zstd_version_patch := `sed -n '/define ZSTD_VERSION_RELEASE/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < "$(LOCAL_PATH)/lib/zstd.h"`
 zstd_version := $(shell echo $(zstd_version_major).$(zstd_version_minor).$(zstd_version_patch))
 
-common_c_includes := $(LOCAL_PATH)/lib $(LOCAL_PATH)/lib/common
+common_c_includes := \
+	$(LOCAL_PATH)/lib \
+	$(LOCAL_PATH)/lib/common \
+	$(LOCAL_PATH)/lib/compress
 
 common_cflags := \
 	-std=c99 \
-	-Wall -Wextra -Wcast-qual -Wcast-align -Wshadow -Wstrict-aliasing=1 -Wswitch-enum -Wdeclaration-after-statement -Wstrict-prototypes -Wundef \
+	-O3 \
+	-Wall -Wextra -Wcast-qual -Wcast-align -Wshadow -Wstrict-aliasing=1 \
+	-Wswitch-enum -Wdeclaration-after-statement -Wstrict-prototypes \
+	-Wundef -Wpointer-arith \
 	-DZSTD_LEGACY_SUPPORT=0 \
 	-DZSTD_VERSION=\"$(zstd_version)\"
 
@@ -22,10 +28,9 @@ decompress_src_files := \
 	lib/decompress/zstd_decompress.c \
 	lib/decompress/huf_decompress.c
 
-lib_c_includes += $(LOCAL_PATH)/lib/compress
+lib_c_includes :=
 
-lib_cflags := \
-	-O3
+lib_cflags :=
 
 lib_src_files := \
 	lib/common/error_private.c \
@@ -50,8 +55,7 @@ endif
 
 programs_c_includes := $(LOCAL_PATH)/programs
 
-programs_cflags := \
-	-Wswitch-enum -falign-loops=32
+programs_cflags :=
 
 programs_src_files := \
 	programs/zstdcli.c \
@@ -61,7 +65,8 @@ ifdef ZSTD_INCLUDE_DICT
 	common_c_includes += $(LOCAL_PATH)/lib/dictBuilder
 	lib_src_files += \
 		lib/dictBuilder/zdict.c \
-		lib/dictBuilder/divsufsort.c
+		lib/dictBuilder/divsufsort.c \
+		lib/dictBuilder/cover.c
 	ZSTD_INCLUDE_DIBIO := y
 else
 	common_cflags += -DZSTD_NODICT
@@ -78,6 +83,18 @@ endif
 ifdef ZSTD_INCLUDE_DIBIO
 	programs_src_files += \
 		programs/dibio.c
+endif
+
+ifdef ZSTD_MULTITHREAD
+	programs_src_files += \
+		lib/common/xxhash.c \
+		lib/common/pool.c \
+		lib/common/threading.c
+	ifndef ZSTD_NO_COMPRESS
+		programs_src_files += \
+			lib/compress/zstdmt_compress.c
+	endif
+	common_cflags += -DZSTD_MULTITHREAD
 endif
 
 include $(CLEAR_VARS)
