@@ -71,12 +71,12 @@ extern "C" {
 *  PLATFORM_POSIX_VERSION >= 1 is equal to found _POSIX_VERSION
 ***************************************************************/
 #if !defined(_WIN32) && (defined(__unix__) || defined(__unix) || (defined(__APPLE__) && defined(__MACH__)) /* UNIX-like OS */ \
-   || defined(__midipix__) || defined(__VMS))
+   || defined(__midipix__) || defined(__VMS)) || defined(__ANDROID__)
 #  if (defined(__APPLE__) && defined(__MACH__)) || defined(__SVR4) || defined(_AIX) || defined(__hpux) /* POSIX.1–2001 (SUSv3) conformant */ \
      || defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)  /* BSD distros */
 #    define PLATFORM_POSIX_VERSION 200112L
 #  else
-#    if defined(__linux__) || defined(__linux)
+#    if defined(__linux__) || defined(__linux) || defined(__ANDROID__)
 #      define _POSIX_C_SOURCE 200112L  /* use feature test macro */
 #    endif
 #    include <unistd.h>  /* declares _POSIX_VERSION */
