@@ -54,8 +54,6 @@ programs_cflags := \
 	-Wswitch-enum -falign-loops=32
 
 programs_src_files := \
-	lib/compress/zbuff_compress.c \
-	lib/decompress/zbuff_decompress.c \
 	programs/zstdcli.c \
 	programs/fileio.c
 
